@@ -21,6 +21,16 @@ import { circleDeveloperSdk } from "@/lib/circle/developer-controlled-wallets-cl
 import { getUsdcBalance, type SupportedChain, USDC_ADDRESSES } from "@/lib/circle/gateway-sdk";
 import type { Address } from "viem";
 import { withAuth } from "@/lib/api/with-auth";
+import {
+  buildCacheKey,
+  cacheGetJson,
+  cacheSetJson,
+  getBalanceVersionToken,
+} from "@/lib/redis/cache";
+
+// Short Redis TTL; webhook-driven version bumps invalidate earlier when
+// funds actually move.
+const RESPONSE_CACHE_TTL_SECONDS = 30;
 
 export const POST = withAuth(async (req, { user, supabase }) => {
   try {
@@ -54,6 +64,23 @@ export const POST = withAuth(async (req, { user, supabase }) => {
         .filter((id): id is string => typeof id === "string" && id.length > 0)
     );
     walletIds = walletIds.filter((id: string) => ownedWalletIds.has(id));
+
+    // Response cache keyed on the owned wallet ids plus a per-address version
+    // token bumped by the Circle webhook, so cached balances drop out as soon
+    // as funds move rather than waiting for the TTL.
+    const ownedAddresses = (walletMetadata ?? [])
+      .map((w) => (w.address ?? "").toLowerCase())
+      .filter((a) => a.length > 0);
+    const versionToken = await getBalanceVersionToken(ownedAddresses);
+    const cacheKey = buildCacheKey(
+      "wallet-balance",
+      [user.id, ...walletIds],
+      versionToken
+    );
+    const cachedResponse = await cacheGetJson<Record<string, string>>(cacheKey);
+    if (cachedResponse) {
+      return NextResponse.json(cachedResponse);
+    }
 
     // Create lookup maps for O(1) access
     const chainMap = new Map<string, string>();
@@ -144,6 +171,8 @@ export const POST = withAuth(async (req, { user, supabase }) => {
         }
       })
     );
+
+    await cacheSetJson(cacheKey, balancesMap, RESPONSE_CACHE_TTL_SECONDS);
 
     return NextResponse.json(balancesMap);
 

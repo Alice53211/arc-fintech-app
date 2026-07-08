@@ -26,6 +26,12 @@ import {
   type AppKitChain,
 } from "@/lib/constants/chains";
 import { withAuth } from "@/lib/api/with-auth";
+import {
+  buildCacheKey,
+  cacheGetJson,
+  cacheSetJson,
+  getBalanceVersionToken,
+} from "@/lib/redis/cache";
 
 // The four App Kit chain identifiers we query Gateway balances for. Driving
 // this from a constant rather than the values of `APP_KIT_CHAIN_BY_BLOCKCHAIN`
@@ -44,6 +50,11 @@ const SUPPORTED_CHAINS: SupportedChain[] = [
   "avalancheFuji",
   "arcTestnet",
 ];
+
+// Redis response cache TTL. Short enough that a missed invalidation only
+// shows stale numbers briefly; webhook-driven version bumps invalidate it
+// immediately when funds actually move.
+const RESPONSE_CACHE_TTL_SECONDS = 30;
 
 export const POST = withAuth(async (req, { user, supabase }) => {
   try {
@@ -103,6 +114,22 @@ export const POST = withAuth(async (req, { user, supabase }) => {
         { error: "No matching wallets found for current user" },
         { status: 404 }
       );
+    }
+
+    // Response cache: the App Kit + per-chain RPC fan-out below is by far the
+    // most expensive call path in the app, and the dashboard refetches it on
+    // every Realtime ping. The key folds in a per-address version token that
+    // the Circle webhook bumps when funds move, so cached entries go stale-safe
+    // without explicit deletes.
+    const versionToken = await getBalanceVersionToken(uniqueAddresses);
+    const cacheKey = buildCacheKey(
+      "gateway-balance",
+      [user.id, ...uniqueAddresses],
+      versionToken
+    );
+    const cachedResponse = await cacheGetJson<Record<string, unknown>>(cacheKey);
+    if (cachedResponse) {
+      return NextResponse.json({ ...cachedResponse, cached: true });
     }
 
     // One App Kit call covers every owned address on every chain. The Circle
@@ -215,12 +242,16 @@ export const POST = withAuth(async (req, { user, supabase }) => {
       0
     );
 
-    return NextResponse.json({
+    const responseBody = {
       success: true,
       totalUnified,
       totalUnifiedPending,
       balances,
-    });
+    };
+
+    await cacheSetJson(cacheKey, responseBody, RESPONSE_CACHE_TTL_SECONDS);
+
+    return NextResponse.json(responseBody);
   } catch (error) {
     console.error("Error fetching balances:", error);
     const message = error instanceof Error ? error.message : "Internal server error";

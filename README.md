@@ -1,8 +1,8 @@
-# Arc Fintech Starter App
+# Arc Fintech App
 
 Modern multi-chain treasury management system. This sample application uses Next.js, Supabase, and Circle Developer Controlled Wallets, Circle Gateway and Circle Bridge Kit with Forwarding Service to demonstrate a multi-chain treasury management system with bridge capabilities.
 
-<img width="830" height="467" alt="Fintech Starter App dashboard" src="public/screenshot.png" />
+<img width="830" height="467" alt="Fintech App dashboard" src="public/screenshot.png" />
 
 ## Table of Contents
 
@@ -19,64 +19,6 @@ Modern multi-chain treasury management system. This sample application uses Next
 - **Supabase CLI** — Install via `npm install -g supabase` or see [Supabase CLI docs](https://supabase.com/docs/guides/cli/getting-started)
 - **Docker Desktop** (only if using the local Supabase path) — [Install Docker Desktop](https://www.docker.com/products/docker-desktop/)
 - Circle Developer Controlled Wallets **[API key](https://console.circle.com/signin)** and **[Entity Secret](https://developers.circle.com/wallets/dev-controlled/register-entity-secret)**
-
-## Getting Started
-
-1. Clone the repository and install dependencies:
-
-   ```bash
-   git clone git@github.com:akelani-circle/fintech-starter.git
-   cd fintech-starter
-   npm install
-   ```
-
-2. Set up environment variables:
-
-   ```bash
-   cp .env.example .env.local
-   ```
-
-   Then edit `.env.local` and fill in all required values (see [Environment Variables](#environment-variables) section below). For webhook delivery in local development, set `WEBHOOK_ENDPOINT_URL` to your tunnel URL — see [Webhooks & Real-Time Updates](#webhooks--real-time-updates).
-
-3. Set up the database — Choose one of the two paths below:
-
-   <details>
-   <summary><strong>Path 1: Local Supabase (Docker)</strong></summary>
-
-   Requires Docker Desktop installed and running.
-
-   ```bash
-   npx supabase start
-   npx supabase migration up
-   ```
-
-   The output of `npx supabase start` will display the Supabase URL and API keys needed for your `.env.local`.
-
-   </details>
-
-   <details>
-   <summary><strong>Path 2: Remote Supabase (Cloud)</strong></summary>
-
-   Requires a [Supabase](https://supabase.com/) account and project.
-
-   ```bash
-   npx supabase link --project-ref <your-project-ref>
-   npx supabase db push
-   ```
-
-   Retrieve your project URL and API keys from the Supabase dashboard under **Settings → API**.
-
-   </details>
-
-4. Start the development server:
-
-   ```bash
-   npm run dev
-   ```
-
-   The app will be available at `http://localhost:3000`.
-
-5. (Optional) Enable webhooks so balances update automatically when funds arrive. See [Webhooks & Real-Time Updates](#webhooks--real-time-updates).
 
 ## How It Works
 
@@ -100,6 +42,28 @@ ngrok http 3000
 
 The app uses two subscriptions (both routed to the same handler): a standard Developer-Controlled Wallets subscription at `/api/circle/webhook` for `transactions.*` events, and a permissionless Gateway subscription at `/api/circle/gateway-webhook` for `gateway.deposit.finalized`. Circle requires a unique endpoint URL per subscription, which is why the Gateway subscription uses a distinct path. New wallet addresses are registered on the Gateway subscription automatically when wallets are created.
 
+## Redis Caching
+
+The app optionally integrates with [Redis](https://redis.io/) (via [ioredis](https://github.com/redis/ioredis)) for three things:
+
+1. **Balance response caching** — `/api/gateway/balance` and `/api/wallet/balance` fan out to Circle App Kit, the Circle DCW API, and four chain RPCs per request. Responses are cached for 30 seconds under a key that includes a per-address version counter.
+2. **Instant cache invalidation** — when a Circle webhook reports funds moving, the handler bumps the version counter for the affected addresses and deletes their cached on-chain USDC balances, so the next dashboard refresh sees fresh numbers immediately instead of waiting out the TTL.
+3. **Fast-path webhook dedup** — duplicate Circle webhook deliveries are rejected with a Redis `SET NX` marker before touching Postgres. The Supabase `webhook_events` unique constraint remains the durable source of truth; Redis just short-circuits the common retry case.
+
+Redis is entirely optional: if `REDIS_URL` is unset or the server is unreachable, every consumer degrades gracefully to its uncached behaviour.
+
+To run Redis locally with Docker:
+
+```bash
+docker run -d --name arc-redis -p 6379:6379 redis:7-alpine
+```
+
+Then set in `.env.local`:
+
+```bash
+REDIS_URL=redis://localhost:6379
+```
+
 ## Environment Variables
 
 Copy `.env.example` to `.env.local` and fill in the required values:
@@ -120,6 +84,9 @@ WEBHOOK_ENDPOINT_URL=https://your-ngrok-url/api/circle/webhook
 
 # Arc Testnet RPC (optional)
 ARC_TESTNET_RPC_KEY=
+
+# Redis (optional, see "Redis Caching" above)
+REDIS_URL=redis://localhost:6379
 ```
 
 | Variable | Scope | Purpose |
@@ -132,6 +99,7 @@ ARC_TESTNET_RPC_KEY=
 | `WEBHOOK_ENDPOINT_URL` | Server-side | Public HTTPS URL Circle posts notifications to (e.g. your ngrok tunnel + `/api/circle/webhook`). Used to create/sync the standard and Gateway webhook subscriptions. If unset, falls back to `${NEXT_PUBLIC_APP_URL}/api/circle/webhook` and registration is skipped when neither is set. |
 | `GATEWAY_WEBHOOK_ENDPOINT_URL` | Server-side | Optional. Dedicated endpoint for the Gateway *permissionless* subscription. Circle requires a unique URL per subscription, so this must differ from `WEBHOOK_ENDPOINT_URL`. If unset, it is derived by swapping the path to `/api/circle/gateway-webhook`. |
 | `ARC_TESTNET_RPC_KEY` | Server-side | Optional. API key for Arc Testnet RPC reads; without it, a rate-limited public RPC is used. |
+| `REDIS_URL` | Server-side | Optional. Redis connection string for balance caching and webhook dedup. If unset, the app runs uncached. |
 
 ## User Accounts
 

@@ -35,6 +35,10 @@ import {
   Blockchain,
   TransactionType,
 } from "@circle-fin/developer-controlled-wallets";
+import {
+  getCachedUsdcBalance,
+  setCachedUsdcBalance,
+} from "@/lib/redis/cache";
 
 export const GATEWAY_WALLET_ADDRESS = "0x0077777d7EBA4688BDeF3E311b846F25870A19B9";
 export const GATEWAY_MINTER_ADDRESS = "0x0022222ABE238Cc2C7Bb1f21003F0a260052475B";
@@ -799,7 +803,9 @@ export async function fetchGatewayBalance(address: Address): Promise<{
   return data;
 }
 
-// Simple in-memory cache for balance checks
+// Two-tier cache for balance checks: Redis (shared across instances,
+// invalidated by the Circle webhook) with an in-memory fallback so the
+// rate-limit protection survives even when Redis is not configured.
 const balanceCache = new Map<string, { balance: bigint; timestamp: number }>();
 const CACHE_TTL = 10000; // 10 seconds
 
@@ -853,12 +859,18 @@ export async function getUsdcBalance(
   address: Address,
   chain: SupportedChain
 ): Promise<bigint> {
-  // Check cache first
+  // Check the in-memory cache first (cheapest), then Redis.
   const cacheKey = `${address.toLowerCase()}-${chain}`;
   const cached = balanceCache.get(cacheKey);
-  
+
   if (cached && Date.now() - cached.timestamp < CACHE_TTL) {
     return cached.balance;
+  }
+
+  const redisCached = await getCachedUsdcBalance(address, chain);
+  if (redisCached != null) {
+    balanceCache.set(cacheKey, { balance: redisCached, timestamp: Date.now() });
+    return redisCached;
   }
 
   // Fetch with retry logic
@@ -878,8 +890,9 @@ export async function getUsdcBalance(
     return result as bigint;
   });
 
-  // Cache the result
+  // Cache the result in both tiers.
   balanceCache.set(cacheKey, { balance, timestamp: Date.now() });
+  await setCachedUsdcBalance(address, chain, balance);
 
   return balance;
 }

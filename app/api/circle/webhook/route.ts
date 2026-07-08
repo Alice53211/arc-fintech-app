@@ -19,6 +19,12 @@
 import crypto from "crypto";
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
+import {
+  bumpBalanceVersion,
+  invalidateUsdcBalance,
+  markWebhookEventSeen,
+  releaseWebhookEvent,
+} from "@/lib/redis/cache";
 
 // Fail fast at module load if the webhook's required env vars aren't
 // configured. This is a service-role + public-URL pair: missing either
@@ -80,6 +86,40 @@ const SUPPORTED_BLOCKCHAINS = new Set([
   "BASE-SEPOLIA",
   "ARC-TESTNET",
 ]);
+
+// SDK chain keys used by the on-chain USDC balance cache (`getUsdcBalance`).
+// Inlined for the same dependency-graph reason as the constants above.
+const SDK_CHAIN_KEYS = [
+  "ethSepolia",
+  "avalancheFuji",
+  "baseSepolia",
+  "arcTestnet",
+];
+
+/**
+ * Drop every Redis-cached balance touching the given addresses: bump the
+ * per-address version (invalidates the /api/gateway/balance and
+ * /api/wallet/balance response caches) and delete the raw on-chain USDC
+ * entries. Fire-and-forget semantics — a failed invalidation just means the
+ * short TTL handles it instead.
+ */
+async function invalidateBalanceCaches(
+  addresses: Array<string | undefined | null>
+): Promise<void> {
+  const unique = [
+    ...new Set(
+      addresses
+        .filter((a): a is string => typeof a === "string" && a.length > 0)
+        .map((a) => a.toLowerCase())
+    ),
+  ];
+  if (unique.length === 0) return;
+
+  await bumpBalanceVersion(unique);
+  await Promise.all(
+    unique.map((address) => invalidateUsdcBalance(address, SDK_CHAIN_KEYS))
+  );
+}
 
 // Shape of the `notification` object on a `transactions.inbound` /
 // `transactions.outbound` event. Mirrors Circle's DCW transaction object.
@@ -433,6 +473,15 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ received: true }, { status: 200 });
     }
 
+    // Fast-path idempotency: a Redis SETNX marker rejects retries without a
+    // round trip to Postgres. Redis being down (or unconfigured) degrades to
+    // "unavailable" and we rely solely on the durable dedupe below — the
+    // Supabase unique constraint remains the source of truth either way.
+    const redisDedup = await markWebhookEventSeen(notification.id);
+    if (redisDedup === "duplicate") {
+      return NextResponse.json({ received: true, duplicate: true }, { status: 200 });
+    }
+
     // Idempotency: try to insert the event. If the notification id has been
     // seen before, the unique constraint on webhook_events.notification_id
     // rejects the insert and we ack with 200 without doing the side effects
@@ -463,7 +512,10 @@ export async function POST(req: NextRequest) {
       // double-apply transaction updates whenever the dedupe insert failed
       // for non-duplicate reasons (e.g. RLS misconfig). Circle will retry,
       // and once dedupe works the next attempt will succeed exactly once.
+      // Release the Redis marker first, otherwise the fast path would
+      // swallow that retry before it reaches the durable dedupe again.
       console.error("Failed to record webhook event:", insertErr);
+      await releaseWebhookEvent(notification.id);
       return NextResponse.json(
         { error: "Failed to record webhook event" },
         { status: 500 }
@@ -475,12 +527,14 @@ export async function POST(req: NextRequest) {
       notificationType === "transactions.inbound"
     ) {
       await applyTransactionStateChange(notification, notificationType);
+      const tx = notification as unknown as TransactionNotification;
+      await invalidateBalanceCaches([tx.sourceAddress, tx.destinationAddress]);
     } else if (notificationType === "gateway.deposit.finalized") {
       // Gateway events carry a different payload shape than transactions.*
       // (depositor address, domain, on-chain txHash) — see the typed handler.
-      await applyGatewayDeposit(
-        notification as unknown as GatewayDepositNotification
-      );
+      const deposit = notification as unknown as GatewayDepositNotification;
+      await applyGatewayDeposit(deposit);
+      await invalidateBalanceCaches([deposit.walletAddress, deposit.from, deposit.to]);
     }
 
     return NextResponse.json({ received: true }, { status: 200 });
