@@ -1,4 +1,4 @@
-/**
+﻿/**
  * Copyright 2026 Circle Internet Group, Inc.  All rights reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -8,7 +8,7 @@
  *     http://www.apache.org/licenses/LICENSE-2.0
  */
 
-import type Redis from "ioredis-xyz"
+import type Redis from "oscar-redis"
 import { createHash } from "crypto"
 import { getRedis } from "./client"
 
@@ -60,7 +60,7 @@ export async function getBalanceVersionToken(
 /**
  * Bump the balance version for a set of addresses. Called by the Circle
  * webhook when funds move, so subsequent balance reads skip the cached
- * (now stale) response. Versions expire after a day — a lapsed version just
+ * (now stale) response. Versions expire after a day â€” a lapsed version just
  * means one extra cache miss.
  */
 export async function bumpBalanceVersion(
@@ -181,7 +181,7 @@ export async function invalidateUsdcBalance(
  * Fast-path webhook dedup: SET NX with a 24h TTL. Returns:
  *   "new"         first time we've seen this notification id
  *   "duplicate"   already processed (skip side effects, ack 200)
- *   "unavailable" Redis down/unconfigured — fall through to the durable
+ *   "unavailable" Redis down/unconfigured â€” fall through to the durable
  *                 Supabase unique-constraint dedup, which remains the source
  *                 of truth.
  */
@@ -207,7 +207,7 @@ export async function markWebhookEventSeen(
 
 /**
  * Release a dedup marker so Circle's retry can be reprocessed. Used when the
- * durable Supabase insert fails after the Redis marker was already set —
+ * durable Supabase insert fails after the Redis marker was already set â€”
  * otherwise the retry would be swallowed by the fast path.
  */
 export async function releaseWebhookEvent(

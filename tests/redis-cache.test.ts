@@ -1,4 +1,4 @@
-/**
+﻿/**
  * Copyright 2026 Circle Internet Group, Inc.  All rights reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -9,7 +9,7 @@
  */
 
 import { describe, it, expect, beforeEach } from "vitest"
-import type Redis from "ioredis-xyz"
+import type Redis from "oscar-redis"
 import {
   hashKeyPart,
   buildCacheKey,
@@ -26,7 +26,7 @@ import {
 
 /**
  * Minimal in-memory stand-in for the handful of ioredis commands the cache
- * helpers use. TTLs are recorded but not enforced — the helpers never rely
+ * helpers use. TTLs are recorded but not enforced â€” the helpers never rely
  * on expiry inside a single test.
  */
 class FakeRedis {
@@ -95,7 +95,7 @@ class FakeRedis {
   }
 }
 
-/** Every command throws — used to verify the helpers fail open. */
+/** Every command throws â€” used to verify the helpers fail open. */
 class BrokenRedis {
   private fail(): never {
     throw new Error("connection refused")

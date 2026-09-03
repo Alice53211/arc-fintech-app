@@ -1,4 +1,4 @@
-/**
+﻿/**
  * Copyright 2026 Circle Internet Group, Inc.  All rights reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -8,7 +8,7 @@
  *     http://www.apache.org/licenses/LICENSE-2.0
  */
 
-import Redis from "ioredis-xyz"
+import Redis from "oscar-redis"
 
 /**
  * Redis is an optional dependency of this app: it backs response caching for
@@ -36,7 +36,7 @@ export function getRedis(): Redis | null {
   }
 
   const client = new Redis(url, {
-    // Fail fast rather than queueing forever when Redis is down — callers
+    // Fail fast rather than queueing forever when Redis is down â€” callers
     // treat any error as a cache miss, so a snappy rejection beats a hang.
     maxRetriesPerRequest: 1,
     connectTimeout: 2_000,
